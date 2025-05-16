@@ -76,3 +76,29 @@ curl -X POST \
 - `-F "audio_file=@./example/audio.wav"`：上传自定义音频文件（@符号表示文件上传）
 - `-F "source_file=@./example/image.png"`：上传自定义源图像文件
 - `-o response2.mp4`：将响应保存到名为response2.mp4的文件
+
+## 项目部署说明
+
+项目文件结构和部署步骤如下：
+
+### 文件位置
+
+所有项目文件都位于：`/root/autodl-fs`
+
+- **代码**：位于 `ditto-talkinghead-main` 目录或者git仓库
+- **模型检查点**：位于 `ditto-checkpoints` 目录
+- **Conda环境**：名为 `ditto` 的环境也在目录内
+
+### 启动步骤
+
+1. 进入项目目录：
+   ```bash
+   cd ditto-talkinghead-main
+   ```
+
+2. 启动API服务：
+   ```bash
+   python app.py
+   ```
+
+启动后，API将在端口6006上运行（根据app.py中的配置）。
