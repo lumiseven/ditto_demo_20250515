@@ -1,6 +1,7 @@
 import os
-from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks
-from fastapi.responses import JSONResponse
+import uuid
+from fastapi import FastAPI, UploadFile, File, Form, Depends
+from fastapi.responses import JSONResponse, FileResponse
 import tempfile
 import shutil
 import uvicorn
@@ -18,38 +19,56 @@ sdk = None
 async def startup_event():
     global sdk
     # Default paths from the original script
-    data_root = "./checkpoints/ditto_trt_Ampere_Plus"
-    cfg_pkl = "./checkpoints/ditto_cfg/v0.4_hubert_cfg_trt.pkl"
+    data_root = "/root/autodl-fs/ditto-checkpoints/ditto_trt_Ampere_Plus"
+    cfg_pkl = "/root/autodl-fs/ditto-checkpoints/ditto_cfg/v0.4_hubert_cfg_trt.pkl"
     sdk = StreamSDK(cfg_pkl, data_root)
+
+# Custom dependency for optional file upload that handles empty strings
+async def optional_audio_file(audio_file: Optional[UploadFile] = File(default=None)):
+    if audio_file is None or audio_file.filename == "":
+        return None
+    return audio_file
+
+async def optional_source_file(source_file: Optional[UploadFile] = File(default=None)):
+    if source_file is None or source_file.filename == "":
+        return None
+    return source_file
 
 @app.post("/generate")
 async def generate_video(
-    background_tasks: BackgroundTasks,
-    audio_file: UploadFile = File(...),
-    source_file: UploadFile = File(...),
-    more_kwargs: Optional[str] = Form(None),
-    output_filename: str = Form("output.mp4")
+    audio_file: Optional[UploadFile] = Depends(optional_audio_file),
+    source_file: Optional[UploadFile] = Depends(optional_source_file),
+    more_kwargs: Optional[str] = Form(None)
 ):
     """
-    Generate a talking head video from audio and source image/video
+    Generate a talking head video from audio and source image/video and return it for download
     
-    - **audio_file**: Audio file (.wav)
-    - **source_file**: Source image or video file
+    - **audio_file**: Audio file (.wav), defaults to ./example/audio.wav if not provided
+    - **source_file**: Source image or video file, defaults to ./example/image.png if not provided
     - **more_kwargs**: JSON string or path to pickle file with additional parameters
-    - **output_filename**: Name of the output file (default: output.mp4)
     """
     # Create temporary directory for processing
     temp_dir = tempfile.mkdtemp()
     
     try:
-        # Save uploaded files to temporary directory
-        audio_path = os.path.join(temp_dir, audio_file.filename)
-        with open(audio_path, "wb") as f:
-            shutil.copyfileobj(audio_file.file, f)
+        # Handle audio file - use default if not provided
+        if audio_file is None:
+            audio_path = "./example/audio.wav"
+        else:
+            audio_path = os.path.join(temp_dir, audio_file.filename)
+            with open(audio_path, "wb") as f:
+                shutil.copyfileobj(audio_file.file, f)
         
-        source_path = os.path.join(temp_dir, source_file.filename)
-        with open(source_path, "wb") as f:
-            shutil.copyfileobj(source_file.file, f)
+        # Handle source file - use default if not provided
+        if source_file is None:
+            source_path = "./example/image.png"
+        else:
+            source_path = os.path.join(temp_dir, source_file.filename)
+            with open(source_path, "wb") as f:
+                shutil.copyfileobj(source_file.file, f)
+        
+        # Generate a random filename for the output
+        output_filename = f"output_{uuid.uuid4().hex}.mp4"
         
         # Set output path
         output_path = os.path.join(temp_dir, output_filename)
@@ -64,23 +83,28 @@ async def generate_video(
                 # If not JSON, treat as path to pickle file
                 kwargs_dict = more_kwargs
         
-        # Run the processing in the background
-        background_tasks.add_task(
-            process_video,
-            sdk=sdk,
-            audio_path=audio_path,
-            source_path=source_path,
-            output_path=output_path,
-            more_kwargs=kwargs_dict,
-            temp_dir=temp_dir
-        )
+        # Run the processing directly
+        run(sdk, audio_path, source_path, output_path, kwargs_dict)
         
-        return JSONResponse(
-            content={
-                "message": "Processing started",
-                "status": "success",
-                "output_filename": output_filename
-            }
+        # Check if the output file exists
+        if not os.path.exists(output_path):
+            raise FileNotFoundError(f"Output file was not generated at {output_path}")
+        
+        # Create a copy of the file in a more permanent location
+        # This ensures the file exists when it's being sent to the client
+        permanent_dir = os.path.join(os.getcwd(), "outputs")
+        os.makedirs(permanent_dir, exist_ok=True)
+        permanent_path = os.path.join(permanent_dir, output_filename)
+        shutil.copy2(output_path, permanent_path)
+        
+        # Clean up the temporary directory
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        
+        # Return the file as a response from the permanent location
+        return FileResponse(
+            path=permanent_path,
+            filename=output_filename,
+            media_type="video/mp4"
         )
     
     except Exception as e:
@@ -94,30 +118,10 @@ async def generate_video(
             }
         )
 
-async def process_video(
-    sdk: StreamSDK,
-    audio_path: str,
-    source_path: str,
-    output_path: str,
-    more_kwargs: Union[str, Dict[str, Any]],
-    temp_dir: str
-):
-    """Process the video in the background and clean up temporary files"""
-    try:
-        # Run the main processing function
-        run(sdk, audio_path, source_path, output_path, more_kwargs)
-        
-        # Here you would typically move the output file to a permanent location
-        # or implement a way for the user to download it
-        
-    finally:
-        # Clean up temporary directory
-        shutil.rmtree(temp_dir, ignore_errors=True)
-
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy"}
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app:app", host="0.0.0.0", port=6006, reload=True)
